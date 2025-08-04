@@ -15,13 +15,14 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal, Slot, QThread, QObject
+from PySide6.QtCore import Qt, Signal, Slot, QThread, QObject, QStandardPaths
 from pathlib import Path
 
 # Import processors and prompts
 from src.processors.openai_api import OpenAIApiProcessor
 from src.processors.ollama_processor import OllamaProcessor
 from src.prompts import SUMMARY_PROMPT, DECISIONS_PROMPT, TODO_PROMPT
+from src.data_manager import DataManager
 
 # --- Workers for async processing ---
 class TranscriptionWorkerSignals(QObject):
@@ -180,8 +181,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("議事録自動生成アプリ")
         self.resize(1024, 768)
+
+        # --- Setup Data Management ---
+        app_data_path = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+        self.data_manager = DataManager(base_dir=app_data_path)
+        try:
+            self.data_manager.initialize_database()
+        except Exception as e:
+            QMessageBox.critical(self, "データベースエラー", f"データベースの初期化に失敗しました: {e}")
+            sys.exit(1)
+
         self.api_key = os.getenv("OPENAI_API_KEY")
-        # TODO: Make these configurable
         self.ollama_host = "http://localhost:11434"
         self.ollama_model = "llama3"
         main_widget = QWidget()
@@ -195,14 +205,22 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Horizontal)
         self.main_layout.addWidget(self.splitter)
         self.minutes_list = QListWidget()
-        self.minutes_list.addItems(["2025-08-01 定例会", "2025-07-25 A案件...", "2025-07-18 Bプロ..."])
         self.splitter.addWidget(self.minutes_list)
+
+        self.populate_minutes_list()
+
         self.setup_file_drop_view()
         self.splitter.setSizes([250, 750])
+
+        # --- Connections ---
         self.new_button.clicked.connect(self.setup_file_drop_view)
+        self.minutes_list.currentItemChanged.connect(self.on_minute_selected)
+
+        # --- Member Variables ---
         self.transcription_thread = None
         self.llm_thread = None
         self.minutes_view = None
+        self.current_filepath = None
 
     def setup_file_drop_view(self):
         if self.splitter.widget(1):
@@ -218,14 +236,63 @@ class MainWindow(QMainWindow):
         if file_path:
             self.handle_file_selected(file_path)
 
+    def populate_minutes_list(self):
+        self.minutes_list.blockSignals(True)
+        self.minutes_list.clear()
+        records = self.data_manager.load_all_minutes()
+        for record_id, title, created_at in records:
+            # Format timestamp for display
+            ts = datetime.fromisoformat(created_at).strftime('%Y-%m-%d %H:%M')
+            item = QListWidgetItem(f"{ts}\n{title}")
+            item.setData(Qt.UserRole, record_id)
+            self.minutes_list.addItem(item)
+        self.minutes_list.blockSignals(False)
+
+    @Slot(QListWidgetItem, QListWidgetItem)
+    def on_minute_selected(self, current_item, previous_item):
+        if not current_item:
+            return
+
+        minute_id = current_item.data(Qt.UserRole)
+        if not minute_id:
+            return
+
+        details = self.data_manager.load_minute_details(minute_id)
+        if not details:
+            QMessageBox.warning(self, "エラー", f"ID {minute_id} の議事録詳細を読み込めませんでした。")
+            return
+
+        # Switch to the minutes view if not already visible
+        if not isinstance(self.splitter.widget(1), MinutesViewWidget):
+            self.minutes_view = MinutesViewWidget()
+            self.minutes_view.export_requested.connect(self.on_export_requested)
+            self.splitter.widget(1).setParent(None)
+            self.splitter.addWidget(self.minutes_view)
+
+        # Populate the tabs
+        self.minutes_view.set_text_for_task("summary", details.get("summary", ""))
+        self.minutes_view.set_text_for_task("decisions", details.get("decisions", ""))
+        self.minutes_view.set_text_for_task("todo", details.get("todo", ""))
+        self.minutes_view.set_text_for_task("full_text", details.get("full_text", ""))
+
+
     @Slot(str)
     def handle_file_selected(self, file_path):
         if not self.api_key:
             QMessageBox.critical(self, "APIキー未設定", "環境変数 `OPENAI_API_KEY` が設定されていません。")
             return
+
+        self.current_filepath = file_path
         file_name = Path(file_path).name
-        self.minutes_list.insertItem(0, file_name)
-        self.minutes_list.setCurrentRow(0)
+
+        # Temporarily disable selection signals while processing
+        self.minutes_list.blockSignals(True)
+
+        list_item = QListWidgetItem(f"処理中... - {file_name}")
+        list_item.setData(Qt.UserRole, None) # No ID yet
+        self.minutes_list.insertItem(0, list_item)
+        self.minutes_list.setCurrentItem(list_item)
+
         self.minutes_view = MinutesViewWidget()
         self.minutes_view.export_requested.connect(self.on_export_requested) # Connect signal
         self.splitter.widget(1).setParent(None)
@@ -285,6 +352,25 @@ class MainWindow(QMainWindow):
     def check_llm_tasks_finished(self):
         if self.llm_task_count >= 3: # summary, decisions, todo
             self.llm_thread.quit()
+
+            try:
+                all_texts = self.minutes_view.get_all_texts()
+                new_id = self.data_manager.save_minutes(self.current_filepath, all_texts)
+
+                current_item = self.minutes_list.currentItem()
+                if current_item:
+                    current_item.setData(Qt.UserRole, new_id)
+                    # Update text now that we have the final info
+                    created_at = datetime.now().strftime('%Y-%m-%d %H:%M')
+                    title = Path(self.current_filepath).name
+                    current_item.setText(f"{created_at}\n{title}")
+
+                QMessageBox.information(self, "保存完了", "議事録の処理と保存が完了しました。")
+                self.minutes_list.blockSignals(False)
+
+            except Exception as e:
+                QMessageBox.critical(self, "保存エラー", f"議事録の保存中にエラーが発生しました:\n{e}")
+                self.minutes_list.blockSignals(False)
 
     @Slot(str)
     def on_llm_error(self, error_message):
