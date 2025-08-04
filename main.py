@@ -106,14 +106,33 @@ class FileDropWidget(QWidget):
         file_path = event.mimeData().urls()[0].toLocalFile()
         self.file_dropped.emit(file_path)
 
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QMenu
+
 class MinutesViewWidget(QWidget):
+    # Signals to request export, format as argument
+    export_requested = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         top_bar_layout = QHBoxLayout()
         self.tabs = QTabWidget()
+
         self.export_button = QPushButton("エクスポート▼")
+        export_menu = QMenu(self)
+        self.export_button.setMenu(export_menu)
+
+        export_as_md = QAction("Markdownとして保存 (.md)", self)
+        export_as_md.triggered.connect(lambda: self.export_requested.emit("markdown"))
+
+        export_as_txt = QAction("テキストとして保存 (.txt)", self)
+        export_as_txt.triggered.connect(lambda: self.export_requested.emit("text"))
+
+        export_menu.addAction(export_as_md)
+        export_menu.addAction(export_as_txt)
+
         top_bar_layout.addWidget(self.tabs)
         top_bar_layout.addWidget(self.export_button)
         layout.addLayout(top_bar_layout)
@@ -125,6 +144,14 @@ class MinutesViewWidget(QWidget):
         self.tabs.addTab(self.decisions_edit, "決定事項")
         self.tabs.addTab(self.todo_edit, "ToDo")
         self.tabs.addTab(self.full_text_edit, "全文")
+    def get_all_texts(self):
+        return {
+            "summary": self.summary_edit.toPlainText(),
+            "decisions": self.decisions_edit.toPlainText(),
+            "todo": self.todo_edit.toPlainText(),
+            "full_text": self.full_text_edit.toPlainText(),
+        }
+
     def set_text_for_task(self, task_type, text):
         if task_type == "summary":
             self.summary_edit.setPlainText(text)
@@ -175,6 +202,7 @@ class MainWindow(QMainWindow):
         self.new_button.clicked.connect(self.setup_file_drop_view)
         self.transcription_thread = None
         self.llm_thread = None
+        self.minutes_view = None
 
     def setup_file_drop_view(self):
         if self.splitter.widget(1):
@@ -199,6 +227,7 @@ class MainWindow(QMainWindow):
         self.minutes_list.insertItem(0, file_name)
         self.minutes_list.setCurrentRow(0)
         self.minutes_view = MinutesViewWidget()
+        self.minutes_view.export_requested.connect(self.on_export_requested) # Connect signal
         self.splitter.widget(1).setParent(None)
         self.splitter.addWidget(self.minutes_view)
         self.minutes_view.show_processing_status(f"「{file_name}」を処理中...\n\nAPIに接続して文字起こしをしています。")
@@ -264,6 +293,86 @@ class MainWindow(QMainWindow):
         self.minutes_view.show_processing_status("", "todo")
         if self.llm_thread and self.llm_thread.isRunning():
             self.llm_thread.quit()
+
+    def _format_content(self, content: dict, file_format: str) -> str:
+        """Formats the content for exporting."""
+        if file_format == "markdown":
+            return f"""
+# 議事録
+
+## 要約
+{content['summary']}
+
+## 決定事項
+{content['decisions']}
+
+## ToDo
+{content['todo']}
+
+---
+
+## 全文文字起こし
+{content['full_text']}
+"""
+        else:  # Plain text
+            return f"""
+議事録
+====================
+
+[要約]
+{content['summary']}
+
+--------------------
+
+[決定事項]
+{content['decisions']}
+
+--------------------
+
+[ToDo]
+{content['todo']}
+
+--------------------
+
+[全文文字起こし]
+{content['full_text']}
+"""
+
+    @Slot(str)
+    def on_export_requested(self, file_format):
+        if not self.minutes_view:
+            return
+
+        current_item = self.minutes_list.currentItem()
+        if current_item:
+            base_name = Path(current_item.text()).stem
+        else:
+            base_name = "議事録"
+
+        if file_format == "markdown":
+            suffix = ".md"
+            file_filter = "Markdownファイル (*.md)"
+        elif file_format == "text":
+            suffix = ".txt"
+            file_filter = "テキストファイル (*.txt)"
+        else:
+            return
+
+        default_path = f"{base_name}{suffix}"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "名前を付けて保存", default_path, file_filter
+        )
+
+        if file_path:
+            try:
+                all_texts = self.minutes_view.get_all_texts()
+                formatted_content = self._format_content(all_texts, file_format)
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(formatted_content.strip())
+                QMessageBox.information(self, "成功", f"ファイルを保存しました:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "エラー", f"ファイルの保存中にエラーが発生しました:\n{e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
