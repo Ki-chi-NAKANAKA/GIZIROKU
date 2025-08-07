@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTextEdit,
     QMessageBox,
+    QMenuBar,
 )
 from PySide6.QtCore import Qt, Signal, Slot, QThread, QObject, QStandardPaths
 from pathlib import Path
@@ -23,6 +24,8 @@ from src.processors.openai_api import OpenAIApiProcessor
 from src.processors.ollama_processor import OllamaProcessor
 from src.prompts import SUMMARY_PROMPT, DECISIONS_PROMPT, TODO_PROMPT
 from src.data_manager import DataManager
+from src.settings_manager import SettingsManager
+from src.settings_dialog import SettingsDialog
 
 # --- Workers for async processing ---
 class TranscriptionWorkerSignals(QObject):
@@ -182,7 +185,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("議事録自動生成アプリ")
         self.resize(1024, 768)
 
-        # --- Setup Data Management ---
+        # --- Setup Managers ---
+        self.settings_manager = SettingsManager()
         app_data_path = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
         self.data_manager = DataManager(base_dir=app_data_path)
         try:
@@ -191,12 +195,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "データベースエラー", f"データベースの初期化に失敗しました: {e}")
             sys.exit(1)
 
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        self.ollama_host = "http://localhost:11434"
-        self.ollama_model = "llama3"
+        self._load_settings()
+
+        # --- UI Setup ---
         main_widget = QWidget()
         self.main_layout = QVBoxLayout(main_widget)
         self.setCentralWidget(main_widget)
+
+        # Menu Bar
+        self._create_menu_bar()
+
         top_bar_layout = QHBoxLayout()
         self.new_button = QPushButton("[+] 新規作成")
         top_bar_layout.addWidget(self.new_button)
@@ -279,7 +287,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def handle_file_selected(self, file_path):
         if not self.api_key:
-            QMessageBox.critical(self, "APIキー未設定", "環境変数 `OPENAI_API_KEY` が設定されていません。")
+            QMessageBox.critical(self, "APIキー未設定", "APIキーが設定されていません。メニューの「ファイル」>「設定...」から設定してください。")
             return
 
         self.current_filepath = file_path
