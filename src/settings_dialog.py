@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLineEdit,
     QDialogButtonBox,
+    QMessageBox,
 )
 from .settings_manager import SettingsManager
 
@@ -51,9 +52,15 @@ class SettingsDialog(QDialog):
             self.settings_manager.get_ollama_model())
 
     def save_settings(self):
-        """Save settings from fields to SettingsManager."""
+        """Validate and save settings from fields to SettingsManager."""
+        ollama_host = self.ollama_host_edit.text().strip()
+        if not (ollama_host.startswith("http://") or ollama_host.startswith("https://")):
+            QMessageBox.warning(
+                self, "入力エラー", "Ollama ホストのURLは 'http://' または 'https://' で始まる必要があります。")
+            return
+
         self.settings_manager.set_openai_api_key(self.api_key_edit.text())
-        self.settings_manager.set_ollama_host(self.ollama_host_edit.text())
+        self.settings_manager.set_ollama_host(ollama_host)
         self.settings_manager.set_ollama_model(
             self.ollama_model_edit.text())
         self.accept()  # Close the dialog

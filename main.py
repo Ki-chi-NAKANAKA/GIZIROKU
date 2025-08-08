@@ -170,6 +170,7 @@ class MinutesViewWidget(QWidget):
         self.tabs = QTabWidget()
 
         self.export_button = QPushButton("エクスポート▼")
+        self.export_button.setEnabled(False)  # Disabled by default
         export_menu = QMenu(self)
         self.export_button.setMenu(export_menu)
 
@@ -294,6 +295,9 @@ class MainWindow(QMainWindow):
     def setup_file_drop_view(self):
         if self.splitter.widget(1):
             self.splitter.widget(1).setParent(None)
+
+        self.minutes_view = None # Clear any reference to the old view
+
         file_drop_widget = FileDropWidget()
         file_drop_widget.file_dropped.connect(self.handle_file_selected)
         file_drop_widget.select_file_button.clicked.connect(
@@ -321,7 +325,7 @@ class MainWindow(QMainWindow):
 
     @Slot(QListWidgetItem, QListWidgetItem)
     def on_minute_selected(self, current_item, previous_item):
-        if not current_item:
+        if not current_item or self.is_processing:
             return
 
         minute_id = current_item.data(Qt.UserRole)
@@ -349,6 +353,8 @@ class MainWindow(QMainWindow):
             "todo", details.get("todo", ""))
         self.minutes_view.set_text_for_task(
             "full_text", details.get("full_text", ""))
+
+        self.minutes_view.export_button.setEnabled(True)
 
     def set_ui_enabled(self, enabled):
         """Enable or disable UI elements during processing."""
@@ -414,6 +420,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_transcription_finished(self, text):
+        if not text or not text.strip():
+            self.on_transcription_error("文字起こし結果が空です。")
+            # Remove the "Processing..." item from the list
+            self.minutes_list.takeItem(0)
+            return
+
         self.status_bar.showMessage("LLMで要約などを生成中...", 5000)
         self.minutes_view.set_text_for_task("full_text", text)
         self.start_llm_thread(text)
@@ -457,6 +469,7 @@ class MainWindow(QMainWindow):
             self.llm_thread.quit()
             self.progress_bar.setVisible(False)
             self.status_bar.showMessage("処理が完了しました。", 5000)
+            self.minutes_view.export_button.setEnabled(True)
 
             try:
                 all_texts = self.minutes_view.get_all_texts()
@@ -479,6 +492,9 @@ class MainWindow(QMainWindow):
                 self.minutes_list.blockSignals(False)
 
     def show_list_context_menu(self, position):
+        if self.minutes_list.count() == 0:
+            return
+
         item = self.minutes_list.itemAt(position)
         if not item:
             return
