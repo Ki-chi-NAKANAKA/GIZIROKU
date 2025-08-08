@@ -1,5 +1,6 @@
 import ollama
 
+
 class OllamaProcessor:
     """
     A processor for generating text using a local Ollama server.
@@ -44,8 +45,9 @@ class OllamaProcessor:
                 ],
             )
             return response["message"]["content"]
+        except ollama.ResponseError as e:
+            if "model not found" in e.error:
+                raise RuntimeError(f"Ollamaモデル '{model}' が見つかりません。")
+            raise RuntimeError(f"Ollamaサーバーからエラーが返されました: {e.error}")
         except Exception as e:
-            # More specific error handling could be added here
-            # (e.g., for connection errors, model not found, etc.)
-            print(f"An error occurred during text generation: {e}")
-            return f"Error communicating with Ollama: {e}"
+            raise RuntimeError(f"Ollamaとの通信中に予期せぬエラーが発生しました: {e}")

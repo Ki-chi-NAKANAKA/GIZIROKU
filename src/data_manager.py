@@ -1,12 +1,13 @@
 import sqlite3
 import json
 import os
-from datetime import datetime
 from pathlib import Path
+
 
 class DataManager:
     """
     Manages the storage and retrieval of meeting minutes.
+
     Uses an SQLite database for metadata and JSON files for details.
     """
 
@@ -19,19 +20,13 @@ class DataManager:
         """
         self.data_dir = base_dir / "data"
         self.db_path = base_dir / "minutes.db"
-
-        # Ensure the data directory exists
         os.makedirs(self.data_dir, exist_ok=True)
 
     def initialize_database(self):
-        """
-        Creates the database and the minutes table if they don't exist.
-        """
+        """Creates the database and the minutes table if they don't exist."""
         try:
             con = sqlite3.connect(self.db_path)
             cur = con.cursor()
-
-            # Create table
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS minutes (
                     id INTEGER PRIMARY KEY,
@@ -40,7 +35,6 @@ class DataManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-
             con.commit()
             con.close()
         except sqlite3.Error as e:
@@ -49,19 +43,17 @@ class DataManager:
 
     def save_minutes(self, original_filepath: str, content_dict: dict) -> int:
         """
-        Saves a new meeting minute's metadata to the DB and details to a JSON file.
+        Saves a new minute's metadata to the DB and details to a JSON file.
 
         Args:
             original_filepath: The path to the original audio file.
-            content_dict: A dictionary containing summary, decisions, todo, and full_text.
+            content_dict: A dictionary with summary, decisions, todo, full_text.
 
         Returns:
             The ID of the newly saved minute.
         """
         title = Path(original_filepath).name
-
         try:
-            # Save metadata to DB
             con = sqlite3.connect(self.db_path)
             cur = con.cursor()
             cur.execute(
@@ -72,19 +64,15 @@ class DataManager:
             con.commit()
             con.close()
 
-            # Save details to JSON
             json_path = self.data_dir / f"{new_id}.json"
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(content_dict, f, ensure_ascii=False, indent=4)
-
             return new_id
-
         except sqlite3.Error as e:
             print(f"Database error during save: {e}")
             raise
         except IOError as e:
             print(f"File writing error during save: {e}")
-            # Potentially delete the DB record if JSON writing fails to avoid inconsistency
             self.delete_minute(new_id)
             raise
 
@@ -98,7 +86,9 @@ class DataManager:
         try:
             con = sqlite3.connect(self.db_path)
             cur = con.cursor()
-            cur.execute("SELECT id, title, created_at FROM minutes ORDER BY created_at DESC")
+            cur.execute(
+                "SELECT id, title, created_at FROM minutes ORDER BY created_at DESC"
+            )
             records = cur.fetchall()
             con.close()
             return records
@@ -136,18 +126,15 @@ class DataManager:
             minute_id: The ID of the minute to delete.
         """
         try:
-            # Delete from DB
             con = sqlite3.connect(self.db_path)
             cur = con.cursor()
             cur.execute("DELETE FROM minutes WHERE id = ?", (minute_id,))
             con.commit()
             con.close()
 
-            # Delete JSON file
             json_path = self.data_dir / f"{minute_id}.json"
             if os.path.exists(json_path):
                 os.remove(json_path)
-
         except sqlite3.Error as e:
             print(f"Database error during delete: {e}")
             raise

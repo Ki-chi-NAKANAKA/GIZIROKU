@@ -1,35 +1,37 @@
 import sys
-import os
-from PySide6.QtWidgets import (
-    QApplication,
-    QMainWindow,
-    QSplitter,
-    QListWidget,
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-    QHBoxLayout,
-    QFileDialog,
-    QTabWidget,
-    QTextEdit,
-    QMessageBox,
-    QMenuBar,
-    QStatusBar,
-    QProgressBar,
-)
-from PySide6.QtCore import Qt, Signal, Slot, QThread, QObject, QStandardPaths
+from datetime import datetime
 from pathlib import Path
 
 import pypandoc
+from PySide6.QtCore import Qt, QObject, QStandardPaths, Signal, Slot, QThread
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QStatusBar,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 # Import processors and prompts
-from src.processors.openai_api import OpenAIApiProcessor
-from src.processors.ollama_processor import OllamaProcessor
-from src.prompts import SUMMARY_PROMPT, DECISIONS_PROMPT, TODO_PROMPT
 from src.data_manager import DataManager
-from src.settings_manager import SettingsManager
+from src.processors.ollama_processor import OllamaProcessor
+from src.processors.openai_api import OpenAIApiProcessor
+from src.prompts import DECISIONS_PROMPT, SUMMARY_PROMPT, TODO_PROMPT
 from src.settings_dialog import SettingsDialog
+from src.settings_manager import SettingsManager
 
 # --- Workers for async processing ---
 class TranscriptionWorkerSignals(QObject):
@@ -97,13 +99,21 @@ class ExportWorker(QObject):
     def run(self):
         try:
             if self.file_format == "word":
-                pypandoc.convert_text(
-                    self.content,
-                    'docx',
-                    format='md',
-                    outputfile=self.file_path,
-                    extra_args=['--standalone']
-                )
+                try:
+                    pypandoc.convert_text(
+                        self.content,
+                        'docx',
+                        format='md',
+                        outputfile=self.file_path,
+                        extra_args=['--standalone']
+                    )
+                except OSError as e:
+                    # This often means pandoc is not installed
+                    if "No such file" in str(e):
+                        raise RuntimeError(
+                            "pandocが見つかりません。Word形式への変換にはpandocのインストールが必要です。"
+                        )
+                    raise e
             else:
                 with open(self.file_path, "w", encoding="utf-8") as f:
                     f.write(self.content)
@@ -114,6 +124,7 @@ class ExportWorker(QObject):
 # --- UI Widgets ---
 class FileDropWidget(QWidget):
     file_dropped = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
@@ -129,6 +140,7 @@ class FileDropWidget(QWidget):
         layout.addWidget(or_label)
         layout.addWidget(self.select_file_button)
         layout.addStretch()
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() and len(event.mimeData().urls()) == 1:
             event.acceptProposedAction()
@@ -136,19 +148,18 @@ class FileDropWidget(QWidget):
             self.setStyleSheet("background-color: #e0e0e0;")
         else:
             event.ignore()
+
     def dragLeaveEvent(self, event):
         self.drop_label.setText("ここに音声ファイルをドラッグ＆ドロップ")
         self.setStyleSheet("")
+
     def dropEvent(self, event):
         self.dragLeaveEvent(event)
         file_path = event.mimeData().urls()[0].toLocalFile()
         self.file_dropped.emit(file_path)
 
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu
 
 class MinutesViewWidget(QWidget):
-    # Signals to request export, format as argument
     export_requested = Signal(str)
 
     def __init__(self, parent=None):
@@ -163,13 +174,16 @@ class MinutesViewWidget(QWidget):
         self.export_button.setMenu(export_menu)
 
         export_as_md = QAction("Markdownとして保存 (.md)", self)
-        export_as_md.triggered.connect(lambda: self.export_requested.emit("markdown"))
+        export_as_md.triggered.connect(
+            lambda: self.export_requested.emit("markdown"))
 
         export_as_txt = QAction("テキストとして保存 (.txt)", self)
-        export_as_txt.triggered.connect(lambda: self.export_requested.emit("text"))
+        export_as_txt.triggered.connect(
+            lambda: self.export_requested.emit("text"))
 
         export_as_docx = QAction("Wordとして保存 (.docx)", self)
-        export_as_docx.triggered.connect(lambda: self.export_requested.emit("word"))
+        export_as_docx.triggered.connect(
+            lambda: self.export_requested.emit("word"))
 
         export_menu.addAction(export_as_md)
         export_menu.addAction(export_as_txt)
@@ -186,6 +200,7 @@ class MinutesViewWidget(QWidget):
         self.tabs.addTab(self.decisions_edit, "決定事項")
         self.tabs.addTab(self.todo_edit, "ToDo")
         self.tabs.addTab(self.full_text_edit, "全文")
+
     def get_all_texts(self):
         return {
             "summary": self.summary_edit.toPlainText(),
@@ -203,6 +218,7 @@ class MinutesViewWidget(QWidget):
             self.todo_edit.setPlainText(text)
         elif task_type == "full_text":
             self.full_text_edit.setPlainText(text)
+
     def show_processing_status(self, message, task_type="full_text"):
         if task_type == "full_text":
             self.full_text_edit.setPlainText(message)
@@ -225,12 +241,14 @@ class MainWindow(QMainWindow):
 
         # --- Setup Managers ---
         self.settings_manager = SettingsManager()
-        app_data_path = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+        app_data_path = Path(
+            QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
         self.data_manager = DataManager(base_dir=app_data_path)
         try:
             self.data_manager.initialize_database()
         except Exception as e:
-            QMessageBox.critical(self, "データベースエラー", f"データベースの初期化に失敗しました: {e}")
+            QMessageBox.critical(self, "データベースエラー",
+                                 f"データベースの初期化に失敗しました: {e}")
             sys.exit(1)
 
         self._load_settings()
@@ -262,9 +280,11 @@ class MainWindow(QMainWindow):
         self.new_button.clicked.connect(self.setup_file_drop_view)
         self.minutes_list.currentItemChanged.connect(self.on_minute_selected)
         self.minutes_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.minutes_list.customContextMenuRequested.connect(self.show_list_context_menu)
+        self.minutes_list.customContextMenuRequested.connect(
+            self.show_list_context_menu)
 
         # --- Member Variables ---
+        self.is_processing = False
         self.transcription_thread = None
         self.llm_thread = None
         self.export_thread = None
@@ -276,12 +296,15 @@ class MainWindow(QMainWindow):
             self.splitter.widget(1).setParent(None)
         file_drop_widget = FileDropWidget()
         file_drop_widget.file_dropped.connect(self.handle_file_selected)
-        file_drop_widget.select_file_button.clicked.connect(self.open_file_dialog)
+        file_drop_widget.select_file_button.clicked.connect(
+            self.open_file_dialog)
         self.splitter.addWidget(file_drop_widget)
 
     @Slot()
     def open_file_dialog(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "音声ファイルを選択", "", "音声ファイル (*.mp3 *.wav *.m4a);;全てのファイル (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "音声ファイルを選択", "",
+            "音声ファイル (*.mp3 *.wav *.m4a);;全てのファイル (*)")
         if file_path:
             self.handle_file_selected(file_path)
 
@@ -290,7 +313,6 @@ class MainWindow(QMainWindow):
         self.minutes_list.clear()
         records = self.data_manager.load_all_minutes()
         for record_id, title, created_at in records:
-            # Format timestamp for display
             ts = datetime.fromisoformat(created_at).strftime('%Y-%m-%d %H:%M')
             item = QListWidgetItem(f"{ts}\n{title}")
             item.setData(Qt.UserRole, record_id)
@@ -308,52 +330,69 @@ class MainWindow(QMainWindow):
 
         details = self.data_manager.load_minute_details(minute_id)
         if not details:
-            QMessageBox.warning(self, "エラー", f"ID {minute_id} の議事録詳細を読み込めませんでした。")
+            QMessageBox.warning(self, "エラー",
+                                f"ID {minute_id} の議事録詳細を読み込めませんでした。")
             return
 
-        # Switch to the minutes view if not already visible
         if not isinstance(self.splitter.widget(1), MinutesViewWidget):
             self.minutes_view = MinutesViewWidget()
-            self.minutes_view.export_requested.connect(self.on_export_requested)
+            self.minutes_view.export_requested.connect(
+                self.on_export_requested)
             self.splitter.widget(1).setParent(None)
             self.splitter.addWidget(self.minutes_view)
 
-        # Populate the tabs
-        self.minutes_view.set_text_for_task("summary", details.get("summary", ""))
-        self.minutes_view.set_text_for_task("decisions", details.get("decisions", ""))
-        self.minutes_view.set_text_for_task("todo", details.get("todo", ""))
-        self.minutes_view.set_text_for_task("full_text", details.get("full_text", ""))
+        self.minutes_view.set_text_for_task(
+            "summary", details.get("summary", ""))
+        self.minutes_view.set_text_for_task(
+            "decisions", details.get("decisions", ""))
+        self.minutes_view.set_text_for_task(
+            "todo", details.get("todo", ""))
+        self.minutes_view.set_text_for_task(
+            "full_text", details.get("full_text", ""))
 
+    def set_ui_enabled(self, enabled):
+        """Enable or disable UI elements during processing."""
+        self.minutes_list.setEnabled(enabled)
+        self.new_button.setEnabled(enabled)
+        # We don't disable the export button as it requires a finished view anyway
 
     @Slot(str)
     def handle_file_selected(self, file_path):
-        if not self.api_key:
-            QMessageBox.critical(self, "APIキー未設定", "APIキーが設定されていません。メニューの「ファイル」>「設定...」から設定してください。")
+        if self.is_processing:
+            QMessageBox.warning(self, "処理中", "現在、別の処理を実行中です。完了するまでお待ちください。")
             return
 
+        if not self.api_key:
+            QMessageBox.critical(
+                self, "APIキー未設定",
+                "APIキーが設定されていません。メニューの「ファイル」>「設定...」から設定してください。")
+            return
+
+        self.is_processing = True
+        self.set_ui_enabled(False)
         self.current_filepath = file_path
         file_name = Path(file_path).name
 
-        # Temporarily disable selection signals while processing
         self.minutes_list.blockSignals(True)
 
         list_item = QListWidgetItem(f"処理中... - {file_name}")
-        list_item.setData(Qt.UserRole, None) # No ID yet
+        list_item.setData(Qt.UserRole, None)  # No ID yet
         self.minutes_list.insertItem(0, list_item)
         self.minutes_list.setCurrentItem(list_item)
 
         self.minutes_view = MinutesViewWidget()
-        self.minutes_view.export_requested.connect(self.on_export_requested) # Connect signal
+        self.minutes_view.export_requested.connect(self.on_export_requested)
         self.splitter.widget(1).setParent(None)
         self.splitter.addWidget(self.minutes_view)
-        self.minutes_view.show_processing_status(f"「{file_name}」を処理中...\n\nAPIに接続して文字起こしをしています。")
+        self.minutes_view.show_processing_status(
+            f"「{file_name}」を処理中...\n\nAPIに接続して文字起こしをしています。")
         self.start_transcription_thread(file_path)
 
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0) # Indeterminate
+        self.progress_bar.setRange(0, 0)  # Indeterminate
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
 
@@ -361,14 +400,16 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.status_bar.showMessage("文字起こしを実行中...")
         self.transcription_thread = QThread()
-        worker = TranscriptionWorker(OpenAIApiProcessor(api_key=self.api_key), file_path)
+        worker = TranscriptionWorker(
+            OpenAIApiProcessor(api_key=self.api_key), file_path)
         worker.moveToThread(self.transcription_thread)
         self.transcription_thread.started.connect(worker.run)
         worker.signals.finished.connect(self.on_transcription_finished)
         worker.signals.error.connect(self.on_transcription_error)
         worker.signals.finished.connect(self.transcription_thread.quit)
         worker.signals.error.connect(self.transcription_thread.quit)
-        self.transcription_thread.finished.connect(self.transcription_thread.deleteLater)
+        self.transcription_thread.finished.connect(
+            self.transcription_thread.deleteLater)
         self.transcription_thread.start()
 
     @Slot(str)
@@ -381,7 +422,10 @@ class MainWindow(QMainWindow):
     def on_transcription_error(self, error_message):
         self.progress_bar.setVisible(False)
         self.status_bar.clearMessage()
-        self.minutes_view.show_processing_status(f"文字起こしエラー:\n\n{error_message}")
+        self.minutes_view.show_processing_status(
+            f"文字起こしエラー:\n\n{error_message}")
+        self.is_processing = False
+        self.set_ui_enabled(True)
 
     def start_llm_thread(self, text):
         self.llm_thread = QThread()
@@ -397,8 +441,6 @@ class MainWindow(QMainWindow):
         worker.signals.error.connect(self.on_llm_error)
         self.llm_thread.finished.connect(worker.deleteLater)
         self.llm_thread.finished.connect(self.llm_thread.deleteLater)
-        # Stop the thread once the worker is done (all tasks completed)
-        # A bit of a simplification; a more robust approach might use a task counter
         worker.signals.finished.connect(
             lambda task, result: self.check_llm_tasks_finished()
         )
@@ -411,27 +453,29 @@ class MainWindow(QMainWindow):
         self.llm_task_count += 1
 
     def check_llm_tasks_finished(self):
-        if self.llm_task_count >= 3: # summary, decisions, todo
+        if self.llm_task_count >= 3:  # summary, decisions, todo
             self.llm_thread.quit()
             self.progress_bar.setVisible(False)
             self.status_bar.showMessage("処理が完了しました。", 5000)
 
             try:
                 all_texts = self.minutes_view.get_all_texts()
-                new_id = self.data_manager.save_minutes(self.current_filepath, all_texts)
+                new_id = self.data_manager.save_minutes(
+                    self.current_filepath, all_texts)
 
                 current_item = self.minutes_list.currentItem()
                 if current_item:
                     current_item.setData(Qt.UserRole, new_id)
-                    # Update text now that we have the final info
                     created_at = datetime.now().strftime('%Y-%m-%d %H:%M')
                     title = Path(self.current_filepath).name
                     current_item.setText(f"{created_at}\n{title}")
 
-                self.minutes_list.blockSignals(False)
-
             except Exception as e:
-                QMessageBox.critical(self, "保存エラー", f"議事録の保存中にエラーが発生しました:\n{e}")
+                QMessageBox.critical(self, "保存エラー",
+                                     f"議事録の保存中にエラーが発生しました:\n{e}")
+            finally:
+                self.is_processing = False
+                self.set_ui_enabled(True)
                 self.minutes_list.blockSignals(False)
 
     def show_list_context_menu(self, position):
@@ -453,14 +497,15 @@ class MainWindow(QMainWindow):
 
         minute_id = current_item.data(Qt.UserRole)
         if not minute_id:
-            # This could be an item that is still processing
-            QMessageBox.warning(self, "削除不可", "この議事録はまだ処理中か、無効なため削除できません。")
+            QMessageBox.warning(self, "削除不可",
+                                "この議事録はまだ処理中か、無効なため削除できません。")
             return
 
         reply = QMessageBox.question(
             self,
             "削除の確認",
-            f"「{current_item.text().splitlines()[1]}」\n\nこの議事録を完全に削除しますか？\nこの操作は元に戻せません。",
+            (f"「{current_item.text().splitlines()[1]}」\n\n"
+             "この議事録を完全に削除しますか？\nこの操作は元に戻せません。"),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -468,67 +513,48 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             try:
                 self.data_manager.delete_minute(minute_id)
-                # Remove from list widget
                 row = self.minutes_list.row(current_item)
                 self.minutes_list.takeItem(row)
-                # Potentially clear the right pane if the deleted item was shown
                 self.setup_file_drop_view()
             except Exception as e:
-                QMessageBox.critical(self, "エラー", f"削除中にエラーが発生しました:\n{e}")
+                QMessageBox.critical(self, "エラー",
+                                     f"削除中にエラーが発生しました:\n{e}")
 
     @Slot(str)
     def on_llm_error(self, error_message):
         self.progress_bar.setVisible(False)
         self.status_bar.clearMessage()
-        self.minutes_view.show_processing_status(f"LLMエラー:\n\n{error_message}", "summary")
+        self.minutes_view.show_processing_status(
+            f"LLMエラー:\n\n{error_message}", "summary")
         self.minutes_view.show_processing_status("", "decisions")
         self.minutes_view.show_processing_status("", "todo")
         if self.llm_thread and self.llm_thread.isRunning():
             self.llm_thread.quit()
+        self.is_processing = False
+        self.set_ui_enabled(True)
 
     def _format_content(self, content: dict, file_format: str) -> str:
         """Formats the content for exporting."""
         if file_format == "markdown":
-            return f"""
-# 議事録
-
-## 要約
-{content['summary']}
-
-## 決定事項
-{content['decisions']}
-
-## ToDo
-{content['todo']}
-
----
-
-## 全文文字起こし
-{content['full_text']}
-"""
+            return (
+                f"# 議事録\n\n"
+                f"## 要約\n{content['summary']}\n\n"
+                f"## 決定事項\n{content['decisions']}\n\n"
+                f"## ToDo\n{content['todo']}\n\n"
+                f"---\n\n"
+                f"## 全文文字起こし\n{content['full_text']}\n"
+            )
         else:  # Plain text
-            return f"""
-議事録
-====================
-
-[要約]
-{content['summary']}
-
---------------------
-
-[決定事項]
-{content['decisions']}
-
---------------------
-
-[ToDo]
-{content['todo']}
-
---------------------
-
-[全文文字起こし]
-{content['full_text']}
-"""
+            return (
+                f"議事録\n====================\n\n"
+                f"[要約]\n{content['summary']}\n\n"
+                f"--------------------\n\n"
+                f"[決定事項]\n{content['decisions']}\n\n"
+                f"--------------------\n\n"
+                f"[ToDo]\n{content['todo']}\n\n"
+                f"--------------------\n\n"
+                f"[全文文字起こし]\n{content['full_text']}\n"
+            )
 
     @Slot(str)
     def on_export_requested(self, file_format):
@@ -575,7 +601,8 @@ class MainWindow(QMainWindow):
             self.export_thread.finished.connect(self.export_thread.deleteLater)
             self.export_thread.start()
 
-            self.status_bar.showMessage(f"{file_format}形式でエクスポート中...")
+            self.status_bar.showMessage(
+                f"{file_format}形式でエクスポート中...")
             self.progress_bar.setVisible(True)
 
     @Slot(str)
@@ -588,8 +615,10 @@ class MainWindow(QMainWindow):
     def on_export_error(self, error_message):
         self.progress_bar.setVisible(False)
         self.status_bar.clearMessage()
-        QMessageBox.critical(self, "エラー", f"エクスポート中にエラーが発生しました:\n{error_message}")
+        QMessageBox.critical(self, "エラー",
+                             f"エクスポート中にエラーが発生しました:\n{error_message}")
         self.export_thread.quit()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

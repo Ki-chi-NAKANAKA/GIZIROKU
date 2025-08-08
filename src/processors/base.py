@@ -1,5 +1,6 @@
 import abc
 
+
 class BaseProcessor(abc.ABC):
     """
     Abstract base class for a transcription processor.
