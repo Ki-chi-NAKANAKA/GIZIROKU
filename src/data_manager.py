@@ -135,5 +135,22 @@ class DataManager:
         Args:
             minute_id: The ID of the minute to delete.
         """
-        # To be implemented later
-        pass
+        try:
+            # Delete from DB
+            con = sqlite3.connect(self.db_path)
+            cur = con.cursor()
+            cur.execute("DELETE FROM minutes WHERE id = ?", (minute_id,))
+            con.commit()
+            con.close()
+
+            # Delete JSON file
+            json_path = self.data_dir / f"{minute_id}.json"
+            if os.path.exists(json_path):
+                os.remove(json_path)
+
+        except sqlite3.Error as e:
+            print(f"Database error during delete: {e}")
+            raise
+        except IOError as e:
+            print(f"File deletion error: {e}")
+            raise
